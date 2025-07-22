@@ -43,4 +43,6 @@ module DAECompiler
     include("analysis/consistency.jl")
     include("interface.jl")
     include("problem_interface.jl")
+    include("cthulhu.jl")
+    using .CthulhuIntegration: descend
 end
