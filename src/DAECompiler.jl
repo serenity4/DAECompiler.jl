@@ -44,5 +44,6 @@ module DAECompiler
     include("interface.jl")
     include("problem_interface.jl")
     include("cthulhu.jl")
-    using .CthulhuIntegration: descend
+    using .CthulhuIntegration
+    export DAEProvider
 end

@@ -1,91 +1,124 @@
 module CthulhuIntegration
 
 using Accessors: setproperties
-using Cthulhu: Cthulhu, AbstractCursor, CustomToggle, CthulhuInterpreter, lookup, get_specialization, __descend_with_error_handling, do_typeinf!, get_ci, OptimizedSource
-using ..DAECompiler: Settings, ADAnalyzer, structural_analysis, find_matching_ci, StructureCache, ir_to_src
+using Cthulhu: Cthulhu, CthulhuState, AbstractProvider, Command, InferenceKey, InferenceDict, PC2Remarks, PC2CallMeta, PC2Effects, PC2Excts, LookupResult, generate_code_instance
+using ..DAECompiler: DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
+using Diffractor: FRuleCallInfo
 
-using Compiler: Compiler, AbstractInterpreter, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects
+using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi
 using Core.IR
 
-struct DAEInterpreter <: AbstractInterpreter
-    cthulhu::CthulhuInterpreter
+mutable struct DAEProvider <: AbstractProvider
+    world::UInt
     settings::Settings
+    remarks::InferenceDict{PC2Remarks}
+    calls::InferenceDict{PC2CallMeta}
+    effects::InferenceDict{PC2Effects}
+    exception_types::InferenceDict{PC2Excts}
 end
-function DAEInterpreter()
-    native = NativeInterpreter()
-    return DAEInterpreter(CthulhuInterpreter(native), Settings())
-end
+DAEProvider(; world = Base.tls_world_age(), settings = Settings()) = DAEProvider(world, settings, InferenceDict{PC2Remarks}(), InferenceDict{PC2CallMeta}(), InferenceDict{PC2Effects}(), InferenceDict{PC2Excts}())
 
-Base.show(io::IO, interp::DAEInterpreter) = print(io, typeof(interp), "(...)")
+Cthulhu.get_inference_world(provider::DAEProvider) = provider.world
 
-Compiler.get_inference_world(interp::DAEInterpreter) = Compiler.get_inference_world(interp.cthulhu)
-Compiler.get_inference_cache(interp::DAEInterpreter) = Compiler.get_inference_cache(interp.cthulhu)
-Compiler.InferenceParams(interp::DAEInterpreter) = Compiler.InferenceParams(interp.cthulhu)
-Compiler.OptimizationParams(interp::DAEInterpreter) = Compiler.OptimizationParams(interp.cthulhu)
-Compiler.may_optimize(interp::DAEInterpreter) = Compiler.may_optimize(interp.cthulhu)
-Compiler.may_compress(interp::DAEInterpreter) = Compiler.may_compress(interp.cthulhu)
-Compiler.may_discard_trees(interp::DAEInterpreter) = Compiler.may_discard_trees(interp.cthulhu)
-Compiler.method_table(interp::DAEInterpreter) = Compiler.method_table(interp.cthulhu)
-Compiler.cache_owner(interp::DAEInterpreter) = Compiler.cache_owner(interp.cthulhu)
-
-struct DAECursor <: AbstractCursor
-    ci::CodeInstance
+function Cthulhu.find_method_instance(provider::DAEProvider, @nospecialize(tt::Type{<:Tuple}), world::UInt)
+    return get_method_instance(tt, world)
 end
 
-Cthulhu.get_ci(cursor::DAECursor) = cursor.ci
-
-# XXX: Can we wrap `CthulhuInterpreter` to reuse its cache?
-# We'll anyways need to either perform type inference on `DAEInterpreter`,
-# and cache the results into `CthulhuInterpreter` manually (because `finishinfer!`)
-# won't be called on it. Either we define a similar cache ourselves
-# (with the relevant lookups), or we 
-
-# For example, type inference after Revise is performed on `CthulhuInterpreter`; but perhaps we should define
-# `do_typeinf!` in a way that we can dispatch on the cursor type, DAECursor in our case?
-
-Cthulhu.lookup(interp::DAEInterpreter, cursor::DAECursor, optimize::Bool) = lookup(interp.cthulhu, get_ci(cursor), optimize)
-
-function toggle_setting(interp::DAEInterpreter, setting::Symbol, value)
-    return setproperties(interp.settings, NamedTuple{(setting,)}((value,)))
+function check_result(ci::CodeInstance)
+    isa(ci.inferred, UncompilableIPOResult) && throw(ci.inferred.error)
+    return true
 end
 
-function Cthulhu.custom_toggles(interp::DAEInterpreter)
-    toggles = [
-        CustomToggle(false, 'f', "orce inline all",
-            cursor -> toggle_setting(interp, :force_inline_all, true),
-            cursor -> toggle_setting(interp, :force_inline_all, false),
-        ),
-    ]
-    return toggles
+function Cthulhu.generate_code_instance(provider::DAEProvider, mi::MethodInstance)
+    world = get_inference_world(provider)
+    ci = find_matching_ci(ci->ci.owner == StructureCache(), mi, world)
+    # XXX: We should not cache the CodeInstance this way, or at least invalidate in the provider in `toggle_setting!`.
+    if ci !== nothing
+        haskey(provider.remarks, ci) && return ci
+    else
+        provider.settings.force_inline_all && @warn "`force_inline_all=true` is not supported yet; this setting will be ignored"
+        analyzer = ADAnalyzer(; world)
+        ci_pre = typeinf_ext(analyzer, mi, SOURCE_MODE_GET_SOURCE)
+        result = structural_analysis!(ci_pre, world, provider.settings)
+        ci = find_matching_ci(ci->ci.owner == StructureCache(), mi, world)::CodeInstance
+    end
+
+    check_result(ci)
+    provider.remarks[ci] = PC2Remarks()
+    provider.calls[ci] = PC2CallMeta()
+    provider.effects[ci] = PC2Effects()
+    provider.exception_types[ci] = PC2Excts()
+
+    @eval Main global result = $(ci.inferred)
+
+    return ci
 end
 
-function Cthulhu.run_type_inference(interp::DAEInterpreter, mi::MethodInstance)
-    @assert !interp.settings.force_inline_all
-    world = get_inference_world(interp)
-    analyzer = ADAnalyzer(; world)
-    ci = typeinf_ext(analyzer, mi, SOURCE_MODE_GET_SOURCE)
-    result = structural_analysis!(ci, world)
-    ret = find_matching_ci(ci->ci.owner == StructureCache(), ci.def, world)
-    src = ir_to_src(result.ir, interp.settings)
-    src.ssavaluetypes = length(src.code)
+Cthulhu.get_override(provider::DAEProvider, @nospecialize(info)) = nothing
+
+Cthulhu.get_pc_remarks(provider::DAEProvider, key::InferenceKey) = get(provider.remarks, key, nothing)
+Cthulhu.get_pc_effects(provider::DAEProvider, key::InferenceKey) = get(provider.effects, key, nothing)
+Cthulhu.get_pc_exct(provider::DAEProvider, key::InferenceKey) = get(provider.exception_types, key, nothing)
+
+function Cthulhu.LookupResult(provider::DAEProvider, ci::CodeInstance, optimize::Bool)
+    if isa(ci.inferred, AnalyzedSource)
+        mi = get_ci_mi(ci)
+        new_ci = generate_code_instance(provider, mi)
+        check_result(new_ci)
+        @assert isa(new_ci.inferred, DAEIPOResult) "Inferred type of newly generated `CodeInstance` must be `DAEIPOResult`, got `$(typeof(new_ci.inferred))`"
+        return LookupResult(provider, new_ci, optimize)
+    end
+    result = ci.inferred::DAEIPOResult
+    ir = copy(result.ir)
+    src = ir_to_src(ir, provider.settings; widen = false)
+    src.ssavaluetypes = copy(ir.stmts.type)
     src.min_world = @atomic ci.min_world
     src.max_world = @atomic ci.max_world
-    src.edges = Core.svec(ci.def)
-    source = OptimizedSource(result.ir, src, src.inlineable, Effects())
-    interp.cthulhu.opt[ret] = source
-    ret::CodeInstance
+    optimized = true
+    rt = Cthulhu.cached_return_type(ci)
+    exct = Cthulhu.cached_exception_type(ci)
+    infos = widen_call_infos(ir.stmts.info)
+    return LookupResult(ir, rt, exct, infos, src.slottypes, Cthulhu.get_effects(ci), src, optimized)
 end
 
-function descend(@nospecialize(args...); @nospecialize(kwargs...))
-    settings = Settings()
-    interp = DAEInterpreter()
-    mi = get_specialization(args...)
-    ci = do_typeinf!(interp, mi)
-    # interp′, ci = Cthulhu.mkinterp(interp, args...)
-    cursor = DAECursor(interp, ci, settings)
-    __descend_with_error_handling(interp′, cursor; kwargs...)
+function widen_call_infos(infos)
+    infos = copy(infos)
+    for (i, info) in enumerate(infos)
+        while true
+            isa(info, FRuleCallInfo) && (info = info.info; continue)
+            isa(info, MappingInfo) && (info = info.info; continue)
+            break
+        end
+        infos[i] = info
+    end
+    return infos
 end
 
-export descend
+function toggle_setting(provider::DAEProvider, setting::Symbol, value)
+    return setproperties(provider.settings, NamedTuple((setting => value,)))
+end
+
+function Cthulhu.menu_commands(provider::DAEProvider)
+    commands = Cthulhu.default_menu_commands()
+    filter!(x -> !in(x.name, (:optimize, :dump_params, :llvm, :native)), commands)
+    push!(commands, toggle_setting(provider, 'f', :force_inline_all, "force inline all"))
+    return commands
+end
+
+function toggle_setting(provider::DAEProvider, key::Char, name::Symbol, description::String = string(name))
+  callback = state -> toggle_setting!(state, name)
+  value = getproperty(provider.settings, name)
+  Command(value, key, name, description, :toggles, callback, callback)
+end
+
+function toggle_setting!(state::CthulhuState, pass::Symbol)
+  (; provider) = state
+  (; settings) = provider
+  value = !getproperty(settings, pass)::Bool
+  provider.settings = setproperties(settings, NamedTuple((pass => value,)))
+  state.display_code = true
+end
+
+export DAEProvider
 
 end
