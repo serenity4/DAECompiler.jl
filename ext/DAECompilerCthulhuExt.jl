@@ -1,14 +1,14 @@
-module CthulhuIntegration
+module DAECompilerCthulhuExt
 
+using Core.IR
+using DAECompiler: DAECompiler, DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
+using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi, NoCallInfo
 using Accessors: setproperties
+using Diffractor: FRuleCallInfo
+
 import Cthulhu as _Cthulhu
 const Cthulhu = Base.get_extension(_Cthulhu, :CthulhuCompilerExt)
 using .Cthulhu: CthulhuState, AbstractProvider, Command, InferenceKey, InferenceDict, PC2Remarks, PC2CallMeta, PC2Effects, PC2Excts, LookupResult, generate_code_instance, value_for_default_command
-using ..DAECompiler: DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
-using Diffractor: FRuleCallInfo
-
-using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi, NoCallInfo
-using Core.IR
 
 mutable struct DAEProvider <: AbstractProvider
     world::UInt
@@ -127,6 +127,6 @@ function toggle_setting!(state::CthulhuState, name::Symbol)
   state.display_code = true
 end
 
-export DAEProvider
+DAECompiler.dae_provider(args...; kwargs...) = DAEProvider(args...; kwargs...)
 
-end
+end # module
