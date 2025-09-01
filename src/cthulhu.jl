@@ -1,11 +1,13 @@
 module CthulhuIntegration
 
 using Accessors: setproperties
-using Cthulhu: Cthulhu, CthulhuState, AbstractProvider, Command, InferenceKey, InferenceDict, PC2Remarks, PC2CallMeta, PC2Effects, PC2Excts, LookupResult, generate_code_instance
+import Cthulhu as _Cthulhu
+const Cthulhu = Base.get_extension(_Cthulhu, :CthulhuCompilerExt)
+using .Cthulhu: CthulhuState, AbstractProvider, Command, InferenceKey, InferenceDict, PC2Remarks, PC2CallMeta, PC2Effects, PC2Excts, LookupResult, generate_code_instance, value_for_default_command
 using ..DAECompiler: DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
 using Diffractor: FRuleCallInfo
 
-using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi
+using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi, NoCallInfo
 using Core.IR
 
 mutable struct DAEProvider <: AbstractProvider
@@ -56,9 +58,9 @@ end
 
 Cthulhu.get_override(provider::DAEProvider, @nospecialize(info)) = nothing
 
-Cthulhu.get_pc_remarks(provider::DAEProvider, key::InferenceKey) = get(provider.remarks, key, nothing)
-Cthulhu.get_pc_effects(provider::DAEProvider, key::InferenceKey) = get(provider.effects, key, nothing)
-Cthulhu.get_pc_exct(provider::DAEProvider, key::InferenceKey) = get(provider.exception_types, key, nothing)
+Cthulhu.get_pc_remarks(provider::DAEProvider, key::CodeInstance) = get(provider.remarks, key, nothing)
+Cthulhu.get_pc_effects(provider::DAEProvider, key::CodeInstance) = get(provider.effects, key, nothing)
+Cthulhu.get_pc_excts(provider::DAEProvider, key::CodeInstance) = get(provider.exception_types, key, nothing)
 
 function Cthulhu.LookupResult(provider::DAEProvider, ci::CodeInstance, optimize::Bool)
     if isa(ci.inferred, AnalyzedSource)
@@ -70,6 +72,7 @@ function Cthulhu.LookupResult(provider::DAEProvider, ci::CodeInstance, optimize:
     end
     result = ci.inferred::DAEIPOResult
     ir = copy(result.ir)
+    pushfirst!(ir.argtypes, Tuple)
     src = ir_to_src(ir, provider.settings; widen = false)
     src.ssavaluetypes = copy(ir.stmts.type)
     src.min_world = @atomic ci.min_world
@@ -78,7 +81,7 @@ function Cthulhu.LookupResult(provider::DAEProvider, ci::CodeInstance, optimize:
     rt = Cthulhu.cached_return_type(ci)
     exct = Cthulhu.cached_exception_type(ci)
     infos = widen_call_infos(ir.stmts.info)
-    return LookupResult(ir, rt, exct, infos, src.slottypes, Cthulhu.get_effects(ci), src, optimized)
+    return LookupResult(ir, src, rt, exct, infos, src.slottypes, Cthulhu.get_effects(ci), optimized)
 end
 
 function widen_call_infos(infos)
@@ -99,7 +102,7 @@ function toggle_setting(provider::DAEProvider, setting::Symbol, value)
 end
 
 function Cthulhu.menu_commands(provider::DAEProvider)
-    commands = Cthulhu.default_menu_commands()
+    commands = Cthulhu.default_menu_commands(provider)
     filter!(x -> !in(x.name, (:optimize, :dump_params, :llvm, :native)), commands)
     push!(commands, toggle_setting(provider, 'f', :force_inline_all, "force inline all"))
     return commands
@@ -107,15 +110,20 @@ end
 
 function toggle_setting(provider::DAEProvider, key::Char, name::Symbol, description::String = string(name))
   callback = state -> toggle_setting!(state, name)
-  value = getproperty(provider.settings, name)
-  Command(value, key, name, description, :toggles, callback, callback)
+  Command(callback, key, name, description, :toggles)
 end
 
-function toggle_setting!(state::CthulhuState, pass::Symbol)
+function Cthulhu.value_for_command(provider::DAEProvider, state::CthulhuState, command::Command)
+    hasproperty(provider.settings, command.name) &&
+        return getproperty(provider.settings, command.name)
+    return value_for_default_command(provider, state, command)
+end
+
+function toggle_setting!(state::CthulhuState, name::Symbol)
   (; provider) = state
   (; settings) = provider
-  value = !getproperty(settings, pass)::Bool
-  provider.settings = setproperties(settings, NamedTuple((pass => value,)))
+  value = !getproperty(settings, name)::Bool
+  provider.settings = setproperties(settings, NamedTuple((name => value,)))
   state.display_code = true
 end
 
