@@ -47,7 +47,7 @@ ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
 Compiler = {rev = "master", url = "https://github.com/JuliaLang/BaseCompiler.jl.git"}
 Cthulhu = {rev = "low-level-interface", url = "https://github.com/serenity4/Cthulhu.jl"}
 DifferentiationInterface = {rev = "main", subdir = "DifferentiationInterface", url = "https://github.com/Keno/DifferentiationInterface.jl"}
-Diffractor = {path = "/home/keno/.julia/dev/Diffractor"}
+Diffractor = {rev = "cthulhu", url = "https://github.com/JuliaDiff/Diffractor.jl.git"}
 SimpleNonlinearSolve = {rev = "master", subdir = "lib/SimpleNonlinearSolve", url = "https://github.com/SciML/NonlinearSolve.jl.git"}
 StateSelection = {rev = "main", url = "https://github.com/JuliaComputing/StateSelection.jl.git"}
 
