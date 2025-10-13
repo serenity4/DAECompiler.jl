@@ -1,7 +1,7 @@
 module DAECompilerCthulhuExt
 
 using Core.IR
-using DAECompiler: DAECompiler, DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
+using DAECompiler: DAECompiler, DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, matched_system_structure, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
 using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi, NoCallInfo
 using Accessors: setproperties
 using Diffractor: FRuleCallInfo
@@ -105,7 +105,19 @@ function Cthulhu.menu_commands(provider::DAEProvider)
     commands = Cthulhu.default_menu_commands(provider)
     filter!(x -> !in(x.name, (:optimize, :dump_params, :llvm, :native)), commands)
     push!(commands, toggle_setting(provider, 'f', :force_inline_all, "force inline all"))
+    push!(commands, Cthulhu.perform_action(show_mss, 'm', :show_mss, :actions, "Show system structure"))
     return commands
+end
+
+function show_mss(state::CthulhuState)
+    result = state.ci.inferred::DAEIPOResult
+    terminal = state.terminal
+    io = terminal.out_stream::IO
+    mss = matched_system_structure(result, state.provider.settings.mode)
+    (_, width) = displaysize(terminal)
+    printstyled(io, '\n', '-'^((width - 26) ÷ 2), " Showing system structure ", '-'^((width - 26) ÷ 2), '\n'; color = :light_black)
+    show(io, MIME"text/plain"(), mss)
+    printstyled(io, '\n', '-'^width, "\n\n"; color = :light_black)
 end
 
 function toggle_setting(provider::DAEProvider, key::Char, name::Symbol, description::String = string(name))
