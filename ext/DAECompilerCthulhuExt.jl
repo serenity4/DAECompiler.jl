@@ -2,13 +2,13 @@ module DAECompilerCthulhuExt
 
 using Core.IR
 using DAECompiler: DAECompiler, DAEIPOResult, UncompilableIPOResult, Settings, ADAnalyzer, structural_analysis!, find_matching_ci, matched_system_structure, StructureCache, ir_to_src, get_method_instance, MappingInfo, AnalyzedSource
-using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, get_inference_world, typeinf_ext, Effects, get_ci_mi, NoCallInfo
+using Compiler: Compiler, InferenceResult, NativeInterpreter, SOURCE_MODE_GET_SOURCE, typeinf_ext, Effects, get_ci_mi, NoCallInfo
 using Accessors: setproperties
 using Diffractor: FRuleCallInfo
 
-import Cthulhu as _Cthulhu
-const Cthulhu = Base.get_extension(_Cthulhu, :CthulhuCompilerExt)
-using .Cthulhu: CthulhuState, AbstractProvider, Command, InferenceKey, InferenceDict, PC2Remarks, PC2CallMeta, PC2Effects, PC2Excts, LookupResult, generate_code_instance, value_for_default_command
+using Cthulhu: Cthulhu, get_module_for_compiler_integration, CthulhuState, AbstractProvider, Command, generate_code_instance, lookup, value_for_default_command, perform_action, get_inference_world, cached_return_type, cached_exception_type
+const CompilerIntegration = get_module_for_compiler_integration(; use_compiler_stdlib = true)
+using .CompilerIntegration: LookupResult, get_effects, InferenceDict, PC2Remarks, PC2CallMeta, PC2Effects, PC2Excts, ConstPropCallInfo, SemiConcreteCallInfo, OCCallInfo
 
 mutable struct DAEProvider <: AbstractProvider
     world::UInt
@@ -51,24 +51,25 @@ function Cthulhu.generate_code_instance(provider::DAEProvider, mi::MethodInstanc
     provider.effects[ci] = PC2Effects()
     provider.exception_types[ci] = PC2Excts()
 
-    @eval Main global result = $(ci.inferred)
-
     return ci
 end
 
-Cthulhu.get_override(provider::DAEProvider, @nospecialize(info)) = nothing
+get_override(provider::DAEProvider, info::ConstPropCallInfo) = nothing
+get_override(provider::DAEProvider, info::SemiConcreteCallInfo) = nothing
+get_override(provider::DAEProvider, info::OCCallInfo) = nothing
 
 Cthulhu.get_pc_remarks(provider::DAEProvider, key::CodeInstance) = get(provider.remarks, key, nothing)
 Cthulhu.get_pc_effects(provider::DAEProvider, key::CodeInstance) = get(provider.effects, key, nothing)
 Cthulhu.get_pc_excts(provider::DAEProvider, key::CodeInstance) = get(provider.exception_types, key, nothing)
 
-function Cthulhu.LookupResult(provider::DAEProvider, ci::CodeInstance, optimize::Bool)
+Cthulhu.lookup(provider::DAEProvider, result::InferenceResult, optimize::Bool) = nothing
+function Cthulhu.lookup(provider::DAEProvider, ci::CodeInstance, optimize::Bool)
     if isa(ci.inferred, AnalyzedSource)
         mi = get_ci_mi(ci)
         new_ci = generate_code_instance(provider, mi)
         check_result(new_ci)
         @assert isa(new_ci.inferred, DAEIPOResult) "Inferred type of newly generated `CodeInstance` must be `DAEIPOResult`, got `$(typeof(new_ci.inferred))`"
-        return LookupResult(provider, new_ci, optimize)
+        return lookup(provider, new_ci, optimize)
     end
     result = ci.inferred::DAEIPOResult
     ir = copy(result.ir)
@@ -78,10 +79,10 @@ function Cthulhu.LookupResult(provider::DAEProvider, ci::CodeInstance, optimize:
     src.min_world = @atomic ci.min_world
     src.max_world = @atomic ci.max_world
     optimized = true
-    rt = Cthulhu.cached_return_type(ci)
-    exct = Cthulhu.cached_exception_type(ci)
+    rt = cached_return_type(ci)
+    exct = cached_exception_type(ci)
     infos = widen_call_infos(ir.stmts.info)
-    return LookupResult(ir, src, rt, exct, infos, src.slottypes, Cthulhu.get_effects(ci), optimized)
+    return LookupResult(ir, src, rt, exct, infos, src.slottypes, get_effects(ci), optimized)
 end
 
 function widen_call_infos(infos)
@@ -103,9 +104,9 @@ end
 
 function Cthulhu.menu_commands(provider::DAEProvider)
     commands = Cthulhu.default_menu_commands(provider)
-    filter!(x -> !in(x.name, (:optimize, :dump_params, :llvm, :native)), commands)
+    filter!(x -> !in(x.name, (:optimize, :dump_params, :llvm, :native, :inlining_costs)), commands)
     push!(commands, toggle_setting(provider, 'f', :force_inline_all, "force inline all"))
-    push!(commands, Cthulhu.perform_action(show_mss, 'm', :show_mss, :actions, "Show system structure"))
+    push!(commands, perform_action(show_mss, 'm', :show_mss, :actions, "Show system structure"))
     return commands
 end
 
