@@ -347,8 +347,6 @@ version = "4.1.1"
 [[deps.Cthulhu]]
 deps = ["Accessors", "CodeTracking", "FoldingTrees", "InteractiveUtils", "JuliaSyntax", "PrecompileTools", "Preferences", "REPL", "TypedSyntax", "UUIDs", "Unicode", "WidthLimitedIO"]
 git-tree-sha1 = "9826a61eca5778a77cade4380b38bc0f9b4bfa9e"
-repo-rev = "split-compiler-integration"
-repo-url = "https://github.com/serenity4/Cthulhu.jl"
 uuid = "f68482b8-f384-11e8-15f7-abe071a5a75f"
 version = "3.0.0"
 weakdeps = ["Compiler"]
